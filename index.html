@@ -134,6 +134,14 @@
   .filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
   .filters .chip{font-size:11px;padding:7px 11px}
 
+  .searchSortRow{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .searchSortRow input{flex:2;min-width:180px}
+  .searchSortRow select{flex:1;min-width:132px;font-family:Verdana,sans-serif;font-size:12px;padding:12px;
+    border-radius:12px;border:1px solid var(--line);background:#FBFAFC;color:var(--ink)}
+  .searchSortRow select:focus{outline:none;border-color:var(--indigo);background:#fff}
+  .filtergrp{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;
+    display:flex;align-items:center;margin-right:2px}
+
   .lock{text-align:center;padding:40px 20px}
   .lock h3{font-size:16px;margin:0 0 6px}
   .lock p{font-size:11.5px;color:var(--muted);margin:0 0 18px;line-height:1.6}
@@ -528,7 +536,38 @@ document.getElementById("unlock").onclick = async function(){
 document.getElementById("code").addEventListener("keydown", function(e){ if(e.key==="Enter") document.getElementById("unlock").click(); });
 
 let ALL = [];
-const filter = {platform:null, page:null, kind:null};
+const filter = {platform:null, page:null, kind:null, sev:null};
+let searchTerm = "";
+let sortKey = "newest";
+
+/* Search only looks at: comment, tester name, test number, screen/page.
+   Platform, kind, severity, positives are handled as filters instead. */
+function matchesSearch(r, term){
+  if(!term) return true;
+  const t = term.toLowerCase();
+  return (r.comment||"").toLowerCase().indexOf(t) > -1
+      || (r.who||"").toLowerCase().indexOf(t) > -1
+      || (r.testnum||"").toLowerCase().indexOf(t) > -1
+      || (r.page||"").toLowerCase().indexOf(t) > -1;
+}
+function matchesFilter(r){
+  return (!filter.platform || r.platform===filter.platform)
+      && (!filter.page || r.page===filter.page)
+      && (!filter.sev || r.sev===filter.sev)
+      && (!filter.kind || (filter.kind==="Issues" ? isBad(r.kind) : filter.kind==="Positive" ? isGood(r.kind) : true));
+}
+function sortRows(rows){
+  const arr = rows.slice();
+  switch(sortKey){
+    case "oldest":      arr.sort(function(a,b){ return a.at < b.at ? -1 : 1; }); break;
+    case "rating_desc": arr.sort(function(a,b){ return (b.rating - a.rating) || (a.at < b.at ? 1 : -1); }); break;
+    case "rating_asc":  arr.sort(function(a,b){ return (a.rating - b.rating) || (a.at < b.at ? 1 : -1); }); break;
+    case "platform":    arr.sort(function(a,b){ return a.platform.localeCompare(b.platform) || (a.at < b.at ? 1 : -1); }); break;
+    case "screen":      arr.sort(function(a,b){ return a.page.localeCompare(b.page) || (a.at < b.at ? 1 : -1); }); break;
+    default:            arr.sort(function(a,b){ return a.at < b.at ? 1 : -1; }); /* newest first */
+  }
+  return arr;
+}
 
 function normalize(o){
   return {
@@ -563,11 +602,6 @@ function render(){
     document.getElementById("refresh").onclick = loadResults;
     return;
   }
-  const rows = ALL.filter(function(r){
-    return (!filter.platform || r.platform===filter.platform)
-        && (!filter.page || r.page===filter.page)
-        && (!filter.kind || (filter.kind==="Issues" ? isBad(r.kind) : filter.kind==="Positive" ? isGood(r.kind) : true));
-  });
   const bugs = ALL.filter(function(r){return isBad(r.kind)});
   const loves = ALL.filter(function(r){return isGood(r.kind)});
 
@@ -597,7 +631,82 @@ function render(){
        + '<span class="ct">'+g.length+' \u00b7 '+avg(g).toFixed(1)+'/5'+(nb?' \u00b7 '+nb+' issue'+(nb>1?'s':''):'')+'</span></div>';
   });
 
-  h += '<div class="secttl">Submissions ('+rows.length+')</div><div class="filters" id="filters"></div>';
+  h += '<div class="secttl">Submissions (<span id="subCount">0</span>)</div>';
+
+  h += '<div class="searchSortRow">'
+     + '<input type="text" id="search" placeholder="Search comments, tester, test number, screen\u2026" value="'+esc(searchTerm)+'">'
+     + '<select id="sortSel">'
+     +   '<option value="newest">Newest first</option>'
+     +   '<option value="oldest">Oldest first</option>'
+     +   '<option value="rating_desc">Rating: high \u2192 low</option>'
+     +   '<option value="rating_asc">Rating: low \u2192 high</option>'
+     +   '<option value="platform">Platform (A\u2013Z)</option>'
+     +   '<option value="screen">Screen (A\u2013Z)</option>'
+     + '</select>'
+     + '<select id="screenSel"><option value="">All screens</option>'
+     +   PAGES.map(function(p){ return '<option value="'+esc(p)+'">'+esc(p)+'</option>'; }).join('')
+     + '</select>'
+     + '</div>';
+
+  h += '<div class="filters" id="filters"></div>';
+  h += '<div id="entriesList"></div>';
+
+  h += '<div class="toolbar"><button id="csv">Download CSV</button><button id="refresh">Refresh</button>'
+     + '<button id="wipe" class="danger">Clear all data</button></div>';
+  box.innerHTML = h;
+
+  document.getElementById("sortSel").value = sortKey;
+  document.getElementById("screenSel").value = filter.page || "";
+
+  const fb = document.getElementById("filters");
+  const groups = [["platform",["iOS","Android","Web"]],["kind",["Issues","Positive"]],["sev",SEV]];
+  groups.forEach(function(g){
+    g[1].forEach(function(v){
+      const b=document.createElement("button"); b.className="chip"; b.textContent=v;
+      b.setAttribute("aria-pressed", String(filter[g[0]]===v));
+      b.onclick=function(){ filter[g[0]] = filter[g[0]]===v ? null : v; render(); };
+      fb.appendChild(b);
+    });
+  });
+
+  document.getElementById("search").addEventListener("input", function(){
+    searchTerm = this.value;
+    renderList();
+  });
+  document.getElementById("sortSel").addEventListener("change", function(){
+    sortKey = this.value;
+    renderList();
+  });
+  document.getElementById("screenSel").addEventListener("change", function(){
+    filter.page = this.value || null;
+    renderList();
+  });
+
+  document.getElementById("csv").onclick = downloadCsv;
+  document.getElementById("refresh").onclick = loadResults;
+  document.getElementById("wipe").onclick = async function(){
+    if(!confirm("This deletes every submission for the whole team. Continue?")) return;
+    try{
+      await apiPost({action:"delete", id:"ALL", code:ADMIN_PASS});
+      ALL = []; render();
+    }catch(e){ alert("Clear failed ("+e.message+")."); }
+  };
+
+  renderList();
+}
+
+function renderList(){
+  const rows = sortRows(ALL.filter(function(r){ return matchesFilter(r) && matchesSearch(r, searchTerm); }));
+  const countEl = document.getElementById("subCount");
+  if(countEl) countEl.textContent = rows.length;
+
+  const list = document.getElementById("entriesList");
+  if(!rows.length){
+    list.innerHTML = '<div class="empty">No submissions match your search or filters.</div>';
+    return;
+  }
+
+  let h = "";
   rows.forEach(function(r){
     const cls = isBad(r.kind) ? "bad" : isGood(r.kind) ? "good" : "";
     h += '<div class="entry '+cls+'"><div class="top">'
@@ -614,28 +723,9 @@ function render(){
       + (r.imgs.length ? ' <button class="shotbtn" data-shots="'+esc(r.id)+'">View '+r.imgs.length+' screenshot'+(r.imgs.length>1?'s':'')+'</button>' : '')
       + '<button class="del" data-del="'+esc(r.id)+'">Delete</button></div></div>';
   });
+  list.innerHTML = h;
 
-  h += '<div class="toolbar"><button id="csv">Download CSV</button><button id="refresh">Refresh</button>'
-     + '<button id="wipe" class="danger">Clear all data</button></div>';
-  box.innerHTML = h;
-
-  const fb = document.getElementById("filters");
-  const groups = [["platform",["iOS","Android","Web"]],["kind",["Issues","Positive"]]];
-  groups.forEach(function(g){
-    g[1].forEach(function(v){
-      const b=document.createElement("button"); b.className="chip"; b.textContent=v;
-      b.setAttribute("aria-pressed", String(filter[g[0]]===v));
-      b.onclick=function(){ filter[g[0]] = filter[g[0]]===v ? null : v; render(); };
-      fb.appendChild(b);
-    });
-  });
-  if(filter.page){
-    const b=document.createElement("button"); b.className="chip"; b.textContent=filter.page+" \u00d7";
-    b.setAttribute("aria-pressed","true"); b.onclick=function(){ filter.page=null; render(); };
-    fb.appendChild(b);
-  }
-
-  box.querySelectorAll("[data-shots]").forEach(function(btn){
+  list.querySelectorAll("[data-shots]").forEach(function(btn){
     btn.onclick = function(){
       const rec = ALL.find(function(r){return r.id===btn.dataset.shots});
       const tgt = document.getElementById("s-"+rec.id);
@@ -647,24 +737,15 @@ function render(){
       btn.textContent="Hide screenshots";
     };
   });
-  box.querySelectorAll("[data-del]").forEach(function(btn){
+  list.querySelectorAll("[data-del]").forEach(function(btn){
     btn.onclick = async function(){
       if(!confirm("Delete this submission permanently? (Screenshot files stay in the Drive folder.)")) return;
       try{
         await apiPost({action:"delete", id:btn.dataset.del, code:ADMIN_PASS});
-        ALL = ALL.filter(function(r){return r.id!==btn.dataset.del}); render();
+        ALL = ALL.filter(function(r){return r.id!==btn.dataset.del}); renderList();
       }catch(e){ alert("Delete failed ("+e.message+"). Refresh and try again."); }
     };
   });
-  document.getElementById("csv").onclick = downloadCsv;
-  document.getElementById("refresh").onclick = loadResults;
-  document.getElementById("wipe").onclick = async function(){
-    if(!confirm("This deletes every submission for the whole team. Continue?")) return;
-    try{
-      await apiPost({action:"delete", id:"ALL", code:ADMIN_PASS});
-      ALL = []; render();
-    }catch(e){ alert("Clear failed ("+e.message+")."); }
-  };
 }
 
 function lightbox(src){
